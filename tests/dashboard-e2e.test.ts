@@ -2,8 +2,9 @@ import { app } from "../src/worker.js";
 import { assertEqual, assertTrue } from "./assert.js";
 
 export async function runDashboardE2ETests() {
-  console.log("▶ Running Web Dashboard UI E2E Tests...");
+  console.log("▶ Running Web Dashboard & Interactive Docs UI E2E Tests...");
 
+  // 1. Dashboard UI Test
   const res = await app.request("/", {}, {} as any);
   assertEqual(res.status, 200, "Dashboard returns HTTP 200 OK");
   const html = await res.text();
@@ -21,5 +22,20 @@ export async function runDashboardE2ETests() {
   assertTrue(html.includes(".status-success"), "Includes status-success CSS styling rule");
   assertTrue(html.includes(".status-error"), "Includes status-error CSS styling rule");
 
-  console.log("✅ Web Dashboard UI E2E Tests Passed successfully!\n");
+  // 2. Interactive Swagger UI Docs Test (/docs)
+  const docsRes = await app.request("/docs", {}, {} as any);
+  assertEqual(docsRes.status, 200, "Interactive Swagger UI returns HTTP 200 OK");
+  const docsHtml = await docsRes.text();
+  assertTrue(docsHtml.includes("swagger-ui"), "Includes Swagger UI bundle container");
+  assertTrue(docsHtml.includes("/openapi.json"), "References OpenAPI JSON endpoint");
+
+  // 3. OpenAPI JSON Spec Test (/openapi.json)
+  const openapiRes = await app.request("/openapi.json", {}, {} as any);
+  assertEqual(openapiRes.status, 200, "OpenAPI JSON endpoint returns HTTP 200 OK");
+  const openapiJson = (await openapiRes.json()) as any;
+  assertEqual(openapiJson.openapi, "3.0.3", "OpenAPI version is 3.0.3");
+  assertTrue(!!openapiJson.paths["/log"], "OpenAPI spec includes /log path");
+  assertTrue(!!openapiJson.paths["/log/batch"], "OpenAPI spec includes /log/batch path");
+
+  console.log("✅ Web Dashboard & Interactive Docs UI E2E Tests Passed successfully!\n");
 }

@@ -20,8 +20,14 @@ app.use("*", cors());
 // 2. Authentication Middleware for API Endpoints
 app.use("*", async (c, next) => {
   const path = c.req.path;
-  // Public routes: Dashboard, Health, MCP
-  if (path === "/" || path === "/health" || path.startsWith("/mcp")) {
+  // Public routes: Dashboard, Health, MCP, Docs, OpenAPI
+  if (
+    path === "/" ||
+    path === "/health" ||
+    path.startsWith("/mcp") ||
+    path === "/docs" ||
+    path === "/openapi.json"
+  ) {
     return next();
   }
 
@@ -53,7 +59,9 @@ app.get("/", (c) => {
   <style>
     * { box-sizing: border-box; }
     body { font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 1100px; margin: 0 auto; padding: 24px; background: #0f172a; color: #f8fafc; }
-    h1 { margin-bottom: 16px; font-weight: 700; color: #38bdf8; }
+    h1 { margin-bottom: 16px; font-weight: 700; color: #38bdf8; display: flex; justify-content: space-between; align-items: center; }
+    .nav-link { font-size: 14px; font-weight: 500; color: #38bdf8; text-decoration: none; border: 1px solid #0284c7; padding: 6px 12px; border-radius: 6px; }
+    .nav-link:hover { background: #0284c7; color: white; }
     .filters { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; background: #1e293b; padding: 16px; border-radius: 8px; border: 1px solid #334155; }
     .filters input, .filters select { padding: 8px 12px; font-size: 14px; border: 1px solid #475569; border-radius: 6px; background: #0f172a; color: #f8fafc; }
     .filters button { padding: 8px 20px; cursor: pointer; background: #0284c7; color: white; border: none; border-radius: 6px; font-weight: 600; transition: background 0.2s; }
@@ -69,7 +77,10 @@ app.get("/", (c) => {
   </style>
 </head>
 <body>
-  <h1>Agent Decision Log</h1>
+  <h1>
+    <span>Agent Decision Log</span>
+    <a href="/docs" class="nav-link">Interactive API Docs ➔</a>
+  </h1>
   <div class="filters">
     <input id="agent_id" placeholder="Agent ID" />
     <input id="session_id" placeholder="Session ID" />
@@ -138,6 +149,151 @@ app.get("/", (c) => {
   </script>
 </body>
 </html>`);
+});
+
+// Interactive Swagger UI Page
+app.get("/docs", (c) => {
+  return c.html(`<!DOCTYPE html>
+<html>
+<head>
+  <title>Agent Decision Log - API Docs</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
+  <style>
+    body { margin: 0; padding: 0; background: #fafafa; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    window.onload = () => {
+      SwaggerUIBundle({
+        url: '/openapi.json',
+        dom_id: '#swagger-ui',
+      });
+    };
+  </script>
+</body>
+</html>`);
+});
+
+// OpenAPI JSON Schema Route
+app.get("/openapi.json", (c) => {
+  return c.json({
+    openapi: "3.0.3",
+    info: {
+      title: "Agent Decision Log API",
+      description: "Audit trail and queryable decision log service for AI agents running on Cloudflare Workers & Durable Objects SQLite.",
+      version: "0.2.0"
+    },
+    paths: {
+      "/health": {
+        get: {
+          summary: "Health Check",
+          responses: {
+            "200": { description: "Service online" }
+          }
+        }
+      },
+      "/log": {
+        post: {
+          summary: "Log a Decision",
+          description: "Record an AI agent tool invocation decision",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/LogEntryInput" }
+              }
+            }
+          },
+          responses: {
+            "201": { description: "Log entry created successfully" }
+          }
+        }
+      },
+      "/log/batch": {
+        post: {
+          summary: "Log Batch Decisions",
+          description: "Insert multiple tool execution decisions in a single call",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    entries: {
+                      type: "array",
+                      items: { $ref: "#/components/schemas/LogEntryInput" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            "201": { description: "Batch entries created successfully" }
+          }
+        }
+      },
+      "/logs": {
+        get: {
+          summary: "Query Decision Logs",
+          parameters: [
+            { name: "agent_id", in: "query", schema: { type: "string" } },
+            { name: "session_id", in: "query", schema: { type: "string" } },
+            { name: "tool_name", in: "query", schema: { type: "string" } },
+            { name: "result_status", in: "query", schema: { type: "string" } },
+            { name: "limit", in: "query", schema: { type: "integer", default: 100 } }
+          ],
+          responses: {
+            "200": { description: "Matching log entries" }
+          }
+        }
+      },
+      "/count": {
+        get: {
+          summary: "Get Entry Count",
+          parameters: [
+            { name: "agent_id", in: "query", schema: { type: "string" } }
+          ],
+          responses: {
+            "200": { description: "Total count" }
+          }
+        }
+      },
+      "/alerts": {
+        get: {
+          summary: "Behavioral Alerts",
+          parameters: [
+            { name: "agent_id", in: "query", schema: { type: "string" } }
+          ],
+          responses: {
+            "200": { description: "Active alerts" }
+          }
+        }
+      }
+    },
+    components: {
+      schemas: {
+        LogEntryInput: {
+          type: "object",
+          required: ["agent_id", "session_id", "tool_name", "result_status"],
+          properties: {
+            agent_id: { type: "string" },
+            session_id: { type: "string" },
+            tool_name: { type: "string" },
+            result_status: { type: "string", enum: ["success", "error", "timeout"] },
+            input: { type: "object", nullable: true },
+            output: { type: "object", nullable: true },
+            reasoning: { type: "string", nullable: true },
+            duration_ms: { type: "integer", default: 0 }
+          }
+        }
+      }
+    }
+  });
 });
 
 // Health check
