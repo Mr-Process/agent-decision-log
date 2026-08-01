@@ -1,0 +1,23 @@
+{
+  "name": "agent-decision-log",
+  "compatibility_date": "2025-04-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "src/worker.ts",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "DECISION_LOG",
+        "class_name": "DecisionLogDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["DecisionLogDO"]
+    }
+  ],
+  "triggers": {
+    "crons": ["0 0 * * *"]
+  }
+}

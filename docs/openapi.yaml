@@ -1,0 +1,223 @@
+openapi: 3.0.3
+info:
+  title: Agent Decision Log API
+  description: Audit trail and queryable decision log service for AI agents running on Cloudflare Workers & Durable Objects SQLite.
+  version: 0.1.0
+servers:
+  - url: http://localhost:8787
+    description: Local development server
+  - url: https://agent-decision-log.your-subdomain.workers.dev
+    description: Cloudflare Workers production server
+paths:
+  /health:
+    get:
+      summary: Health Check
+      operationId: getHealth
+      responses:
+        '200':
+          description: Service online
+          content:
+            text/plain:
+              example: ok
+  /log:
+    post:
+      summary: Log a Decision
+      description: Record an AI agent tool invocation decision
+      operationId: logDecision
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogEntryInput'
+      responses:
+        '201':
+          description: Log entry created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  timestamp:
+                    type: string
+                    format: date-time
+        '400':
+          description: Missing required fields
+  /logs:
+    get:
+      summary: Query Decision Logs
+      description: Query stored logs with filtering parameters
+      operationId: queryLogs
+      parameters:
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+        - name: session_id
+          in: query
+          schema:
+            type: string
+        - name: tool_name
+          in: query
+          schema:
+            type: string
+        - name: result_status
+          in: query
+          schema:
+            type: string
+            enum: [success, error, timeout]
+        - name: since
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: until
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Matching log entries list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LogEntry'
+  /count:
+    get:
+      summary: Get Entry Count
+      operationId: getCount
+      parameters:
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Total count
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+  /alerts:
+    get:
+      summary: Behavioral Alerts
+      description: Evaluates log entries against behavioral rules
+      operationId: getAlerts
+      parameters:
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Active behavioral alerts list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  alerts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Alert'
+components:
+  schemas:
+    LogEntryInput:
+      type: object
+      required:
+        - agent_id
+        - session_id
+        - tool_name
+        - result_status
+      properties:
+        agent_id:
+          type: string
+        session_id:
+          type: string
+        tool_name:
+          type: string
+        result_status:
+          type: string
+          enum: [success, error, timeout]
+        input:
+          type: object
+          nullable: true
+        output:
+          type: object
+          nullable: true
+        reasoning:
+          type: string
+          nullable: true
+        duration_ms:
+          type: integer
+          default: 0
+        metadata:
+          type: object
+    LogEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        agent_id:
+          type: string
+        session_id:
+          type: string
+        timestamp:
+          type: string
+        tool_name:
+          type: string
+        input:
+          type: object
+          nullable: true
+        output:
+          type: object
+          nullable: true
+        reasoning:
+          type: string
+          nullable: true
+        result_status:
+          type: string
+        duration_ms:
+          type: integer
+        metadata:
+          type: object
+    Alert:
+      type: object
+      properties:
+        rule_id:
+          type: string
+        rule_name:
+          type: string
+        severity:
+          type: string
+          enum: [info, warning, critical]
+        message:
+          type: string
+        agent_id:
+          type: string
+        timestamp:
+          type: string
+        context:
+          type: object
