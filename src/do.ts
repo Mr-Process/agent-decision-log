@@ -22,12 +22,15 @@ try {
 }
 
 export class DecisionLogDO extends TargetDurableObject {
+  private initialized = false;
+
   private getSql() {
     const storage = (this as any).ctx?.storage as any;
     return storage?.sql || storage;
   }
 
   async init(): Promise<void> {
+    if (this.initialized) return;
     const sql = this.getSql();
     if (!sql) return;
     await sql.exec(
@@ -57,6 +60,7 @@ export class DecisionLogDO extends TargetDurableObject {
     await sql.exec(
       `CREATE INDEX IF NOT EXISTS idx_tool ON log_entries(tool_name)`
     );
+    this.initialized = true;
   }
 
   async insert(entry: LogEntry): Promise<void> {
@@ -85,10 +89,11 @@ export class DecisionLogDO extends TargetDurableObject {
     await this.init();
     const sql = this.getSql();
     if (!sql) return;
-    for (const entry of entries) {
-      await sql.exec(
-        `INSERT INTO log_entries (id, agent_id, session_id, timestamp, tool_name, input, output, reasoning, result_status, duration_ms, metadata)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    const chunkSize = 500;
+    for (let i = 0; i < entries.length; i += chunkSize) {
+      const chunk = entries.slice(i, i + chunkSize);
+      const placeholders = chunk.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
+      const params = chunk.flatMap((entry) => [
         entry.id,
         entry.agent_id,
         entry.session_id,
@@ -100,6 +105,11 @@ export class DecisionLogDO extends TargetDurableObject {
         entry.result_status,
         entry.duration_ms,
         JSON.stringify(entry.metadata)
+      ]);
+      await sql.exec(
+        `INSERT INTO log_entries (id, agent_id, session_id, timestamp, tool_name, input, output, reasoning, result_status, duration_ms, metadata)
+         VALUES ${placeholders}`,
+        ...params
       );
     }
   }

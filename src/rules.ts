@@ -32,12 +32,16 @@ export function defaultRules(): Rule[] {
 export function evaluateRules(entries: LogEntry[], rules: Rule[]): Alert[] {
   const alerts: Alert[] = [];
   const now = Date.now();
+  const parsedEntries = entries.map((e) => ({
+    entry: e,
+    time: new Date(e.timestamp).getTime()
+  }));
 
   for (const rule of rules) {
     const windowStart = now - rule.pattern.window_ms;
-    const windowEntries = entries.filter(
-      (e) => new Date(e.timestamp).getTime() >= windowStart
-    );
+    const windowEntries = parsedEntries
+      .filter((pe) => pe.time >= windowStart)
+      .map((pe) => pe.entry);
 
     if (windowEntries.length === 0) continue;
 
