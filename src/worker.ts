@@ -367,16 +367,22 @@ app.post("/log/batch", async (c) => {
   }
 
   let totalInserted = 0;
+  const promises = [];
   for (const [agent_id, agentEntries] of grouped.entries()) {
     const doId = c.env.DECISION_LOG.idFromName(agent_id);
     const stub = c.env.DECISION_LOG.get(doId);
-    await stub.fetch("https://do/insert-batch", {
-      method: "POST",
-      body: JSON.stringify(agentEntries),
-      headers: { "Content-Type": "application/json" },
-    });
-    totalInserted += agentEntries.length;
+    promises.push(
+      stub.fetch("https://do/insert-batch", {
+        method: "POST",
+        body: JSON.stringify(agentEntries),
+        headers: { "Content-Type": "application/json" },
+      }).then(() => {
+        totalInserted += agentEntries.length;
+      })
+    );
   }
+
+  await Promise.all(promises);
 
   return c.json({ count: totalInserted }, 201);
 });
@@ -397,9 +403,13 @@ app.get("/logs", async (c) => {
   const doName = query.agent_id || "global";
   const doId = c.env.DECISION_LOG.idFromName(doName);
   const stub = c.env.DECISION_LOG.get(doId);
-  const res = await stub.fetch("https://do/query?" + new URLSearchParams(
-    Object.entries(query).filter(([_, v]) => v !== undefined).map(([k, v]) => [k, String(v)])
-  ));
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(query)) {
+    if (v !== undefined) {
+      params.append(k, String(v));
+    }
+  }
+  const res = await stub.fetch("https://do/query?" + params.toString());
   const logs = await res.json();
   return c.json({ logs });
 });
