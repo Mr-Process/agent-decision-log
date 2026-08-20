@@ -4,47 +4,59 @@ import { DecisionLogDO } from "./do.js";
 import { DecisionLogMCP } from "./mcp-server.js";
 import type { LogEntry, LogQuery } from "./types.js";
 import { defaultRules, evaluateRules } from "./rules.js";
+import { parseBatch, parseEntry, parseQuery, ValidationError } from "./validation.js";
 
 export { DecisionLogDO, DecisionLogMCP };
 
 export interface Env {
   DECISION_LOG: DurableObjectNamespace;
   API_KEY?: string;
+  ALLOWED_ORIGINS?: string;
 }
 
 export const app = new Hono<{ Bindings: Env }>();
 
-// 1. Enable CORS for all routes
-app.use("*", cors());
+function allowedOrigins(env: Env): string[] {
+  return (env.ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+}
 
-// 2. Authentication Middleware for API Endpoints
+function timingSafeEqual(left: string, right: string): boolean {
+  if (left.length !== right.length) return false;
+  let mismatch = 0;
+  for (let index = 0; index < left.length; index += 1) mismatch |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  return mismatch === 0;
+}
+
+// CORS is disabled unless an operator supplies exact browser origins.
+app.use("*", cors({
+  origin: (origin, c) => allowedOrigins(c.env).includes(origin) ? origin : "",
+  allowHeaders: ["Authorization", "Content-Type", "X-API-Key"],
+  allowMethods: ["GET", "POST", "OPTIONS"],
+}));
+
+// Dashboard, health, and documentation are public. All data and MCP routes
+// fail closed when API_KEY is absent or does not match.
 app.use("*", async (c, next) => {
   const path = c.req.path;
-  // Public routes: Dashboard, Health, MCP, Docs, OpenAPI
-  if (
-    path === "/" ||
-    path === "/health" ||
-    path.startsWith("/mcp") ||
-    path === "/docs" ||
-    path === "/openapi.json"
-  ) {
+  if (path === "/" || path === "/health" || path === "/docs" || path === "/openapi.json") {
     return next();
   }
 
-  // If API_KEY environment variable is configured, enforce auth check
   const requiredKey = c.env.API_KEY;
-  if (requiredKey) {
-    const apiKeyHeader = c.req.header("x-api-key");
-    const authHeader = c.req.header("authorization");
-    let bearerToken: string | undefined;
-    if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
-      bearerToken = authHeader.substring(7).trim();
-    }
+  if (!requiredKey) {
+    return c.json({ error: "Service misconfigured: API_KEY is required for protected routes." }, 503);
+  }
 
-    const providedKey = apiKeyHeader || bearerToken;
-    if (!providedKey || providedKey !== requiredKey) {
-      return c.json({ error: "Unauthorized: Invalid or missing API key" }, 401);
-    }
+  const authorization = c.req.header("authorization");
+  const bearerToken = authorization?.toLowerCase().startsWith("bearer ")
+    ? authorization.slice(7).trim()
+    : undefined;
+  const providedKey = c.req.header("x-api-key") || bearerToken;
+  if (!providedKey || !timingSafeEqual(providedKey, requiredKey)) {
+    return c.json({ error: "Unauthorized" }, 401);
   }
 
   return next();
@@ -111,41 +123,70 @@ app.get("/", (c) => {
     </tbody>
   </table>
   <script>
+    function apiKey() {
+      let key = sessionStorage.getItem('decisionLogApiKey');
+      if (!key) {
+        key = window.prompt('Enter the Agent Decision Log API key for this browser session:') || '';
+        if (key) sessionStorage.setItem('decisionLogApiKey', key);
+      }
+      return key;
+    }
+
+    function appendCell(row, value, className, title) {
+      const cell = document.createElement('td');
+      if (className) cell.className = className;
+      cell.textContent = value == null ? '' : String(value);
+      if (title) cell.title = String(title);
+      row.appendChild(cell);
+    }
+
+    function emptyState(tbody, message) {
+      const row = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = 8;
+      cell.style.cssText = 'text-align:center;color:#94a3b8;padding:24px;';
+      cell.textContent = message;
+      row.appendChild(cell);
+      tbody.replaceChildren(row);
+    }
+
     async function loadLogs() {
+      const key = apiKey();
+      const tbody = document.getElementById('logBody');
+      if (!key) return emptyState(tbody, 'An API key is required to load logs.');
+
       const params = new URLSearchParams();
       const agent = document.getElementById('agent_id').value;
       const session = document.getElementById('session_id').value;
       const tool = document.getElementById('tool_name').value;
       const status = document.getElementById('result_status').value;
-      if (agent) params.set('agent_id', agent);
+      if (!agent) return emptyState(tbody, 'Enter an Agent ID to query its isolated log shard.');
+      params.set('agent_id', agent);
       if (session) params.set('session_id', session);
       if (tool) params.set('tool_name', tool);
       if (status) params.set('result_status', status);
-      params.set('limit', '200');
+      params.set('limit', '100');
 
-      const res = await fetch('/logs?' + params);
+      const res = await fetch('/logs?' + params, { headers: { 'X-API-Key': key } });
+      if (!res.ok) return emptyState(tbody, 'Unable to load logs: ' + res.status);
       const data = await res.json();
-      const tbody = document.getElementById('logBody');
-      if (!data.logs || data.logs.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#94a3b8;padding:24px;">No logs found.</td></tr>';
-        return;
-      }
-      tbody.innerHTML = data.logs.map(l => {
-        const time = new Date(l.timestamp).toLocaleString();
-        const inputStr = l.input ? JSON.stringify(l.input).substring(0, 80) : '';
-        return '<tr>' +
-          '<td>' + time + '</td>' +
-          '<td>' + l.agent_id + '</td>' +
-          '<td>' + (l.session_id ? l.session_id.substring(0, 12) : '') + '</td>' +
-          '<td>' + l.tool_name + '</td>' +
-          '<td class="status-' + l.result_status + '">' + l.result_status + '</td>' +
-          '<td class="json-cell" title="' + (l.input ? JSON.stringify(l.input).replace(/"/g, '&quot;') : '') + '">' + inputStr + '</td>' +
-          '<td class="reasoning" title="' + (l.reasoning || '').replace(/"/g, '&quot;') + '">' + (l.reasoning || '') + '</td>' +
-          '<td>' + l.duration_ms + 'ms</td>' +
-        '</tr>';
-      }).join('');
+      if (!data.logs || data.logs.length === 0) return emptyState(tbody, 'No logs found.');
+
+      const rows = data.logs.map((log) => {
+        const row = document.createElement('tr');
+        const input = log.input ? JSON.stringify(log.input) : '';
+        appendCell(row, new Date(log.timestamp).toLocaleString());
+        appendCell(row, log.agent_id);
+        appendCell(row, log.session_id ? log.session_id.substring(0, 12) : '');
+        appendCell(row, log.tool_name);
+        appendCell(row, log.result_status, 'status-' + log.result_status);
+        appendCell(row, input.substring(0, 80), 'json-cell', input);
+        appendCell(row, log.reasoning || '', 'reasoning', log.reasoning || '');
+        appendCell(row, String(log.duration_ms) + 'ms');
+        return row;
+      });
+      tbody.replaceChildren(...rows);
     }
-    loadLogs();
   </script>
 </body>
 </html>`);
@@ -299,132 +340,116 @@ app.get("/openapi.json", (c) => {
 // Health check
 app.get("/health", (c) => c.text("ok"));
 
-// Log a single decision
-app.post("/log", async (c) => {
-  const body = await c.req.json();
-  const { agent_id, session_id, tool_name, input, output, reasoning, result_status, duration_ms, metadata } = body;
-
-  if (!agent_id || !session_id || !tool_name || !result_status) {
-    return c.json({ error: "Missing required fields: agent_id, session_id, tool_name, result_status" }, 400);
-  }
-
-  const entry: LogEntry = {
-    id: crypto.randomUUID(),
-    agent_id,
-    session_id,
-    timestamp: new Date().toISOString(),
-    tool_name,
-    input: input ?? null,
-    output: output ?? null,
-    reasoning: reasoning ?? null,
-    result_status,
-    duration_ms: duration_ms ?? 0,
-    metadata: metadata ?? {},
-  };
-
-  const doId = c.env.DECISION_LOG.idFromName(agent_id);
-  const stub = c.env.DECISION_LOG.get(doId);
-  await stub.fetch("https://do/insert", {
+async function registerAgent(env: Env, agentId: string): Promise<void> {
+  const registry = env.DECISION_LOG.get(env.DECISION_LOG.idFromName("__agent_registry__"));
+  const response = await registry.fetch("https://do/register-agent", {
     method: "POST",
-    body: JSON.stringify(entry),
+    body: JSON.stringify({ agent_id: agentId }),
     headers: { "Content-Type": "application/json" },
   });
+  if (!response.ok) throw new Error("Unable to register the agent shard for retention.");
+}
 
-  return c.json({ id: entry.id, timestamp: entry.timestamp }, 201);
+// Log a single decision
+app.post("/log", async (c) => {
+  try {
+    const body = await c.req.json();
+    const entry = parseEntry(body);
+    const stub = c.env.DECISION_LOG.get(c.env.DECISION_LOG.idFromName(entry.agent_id));
+    const response = await stub.fetch("https://do/insert", {
+      method: "POST",
+      body: JSON.stringify(entry),
+      headers: { "Content-Type": "application/json" },
+    });
+    if (!response.ok) throw new Error("The log shard rejected the entry.");
+    await registerAgent(c.env, entry.agent_id);
+    return c.json({ id: entry.id, timestamp: entry.timestamp }, 201);
+  } catch (error) {
+    const message = error instanceof ValidationError ? error.message : "Unable to persist log entry.";
+    return c.json({ error: message }, error instanceof ValidationError ? 400 : 502);
+  }
 });
 
 // Log batch decisions
 app.post("/log/batch", async (c) => {
-  const body = await c.req.json();
-  const { entries } = body as { entries: any[] };
-
-  if (!Array.isArray(entries) || entries.length === 0) {
-    return c.json({ error: "Invalid payload: 'entries' array required" }, 400);
-  }
-
-  const grouped = new Map<string, LogEntry[]>();
-  for (const item of entries) {
-    if (!item.agent_id || !item.session_id || !item.tool_name || !item.result_status) {
-      continue;
+  try {
+    const entries = parseBatch(await c.req.json());
+    const grouped = new Map<string, typeof entries>();
+    for (const entry of entries) {
+      grouped.set(entry.agent_id, [...(grouped.get(entry.agent_id) ?? []), entry]);
     }
-    const entry: LogEntry = {
-      id: crypto.randomUUID(),
-      agent_id: item.agent_id,
-      session_id: item.session_id,
-      timestamp: item.timestamp || new Date().toISOString(),
-      tool_name: item.tool_name,
-      input: item.input ?? null,
-      output: item.output ?? null,
-      reasoning: item.reasoning ?? null,
-      result_status: item.result_status,
-      duration_ms: item.duration_ms ?? 0,
-      metadata: item.metadata ?? {},
-    };
-    if (!grouped.has(entry.agent_id)) {
-      grouped.set(entry.agent_id, []);
+
+    for (const [agentId, agentEntries] of grouped) {
+      const stub = c.env.DECISION_LOG.get(c.env.DECISION_LOG.idFromName(agentId));
+      const response = await stub.fetch("https://do/insert-batch", {
+        method: "POST",
+        body: JSON.stringify(agentEntries),
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!response.ok) throw new Error("A log shard rejected the batch.");
+      await registerAgent(c.env, agentId);
     }
-    grouped.get(entry.agent_id)!.push(entry);
-  }
 
-  let totalInserted = 0;
-  for (const [agent_id, agentEntries] of grouped.entries()) {
-    const doId = c.env.DECISION_LOG.idFromName(agent_id);
-    const stub = c.env.DECISION_LOG.get(doId);
-    await stub.fetch("https://do/insert-batch", {
-      method: "POST",
-      body: JSON.stringify(agentEntries),
-      headers: { "Content-Type": "application/json" },
-    });
-    totalInserted += agentEntries.length;
+    return c.json({ count: entries.length }, 201);
+  } catch (error) {
+    const message = error instanceof ValidationError ? error.message : "Unable to persist log batch.";
+    return c.json({ error: message }, error instanceof ValidationError ? 400 : 502);
   }
-
-  return c.json({ count: totalInserted }, 201);
 });
 
-// Query decisions
+// Query decisions in one explicitly selected agent shard.
 app.get("/logs", async (c) => {
-  const query: LogQuery = {
-    agent_id: c.req.query("agent_id"),
-    session_id: c.req.query("session_id"),
-    tool_name: c.req.query("tool_name"),
-    result_status: c.req.query("result_status"),
-    since: c.req.query("since"),
-    until: c.req.query("until"),
-    limit: c.req.query("limit") ? parseInt(c.req.query("limit")!, 10) : undefined,
-    offset: c.req.query("offset") ? parseInt(c.req.query("offset")!, 10) : undefined,
-  };
+  try {
+    const query = parseQuery({
+      agent_id: c.req.query("agent_id"),
+      session_id: c.req.query("session_id"),
+      tool_name: c.req.query("tool_name"),
+      result_status: c.req.query("result_status"),
+      since: c.req.query("since"),
+      until: c.req.query("until"),
+      limit: c.req.query("limit"),
+      offset: c.req.query("offset"),
+    });
+    if (!query.agent_id) return c.json({ error: "agent_id is required for shard-isolated queries." }, 400);
 
-  const doName = query.agent_id || "global";
-  const doId = c.env.DECISION_LOG.idFromName(doName);
-  const stub = c.env.DECISION_LOG.get(doId);
-  const res = await stub.fetch("https://do/query?" + new URLSearchParams(
-    Object.entries(query).filter(([_, v]) => v !== undefined).map(([k, v]) => [k, String(v)])
-  ));
-  const logs = await res.json();
-  return c.json({ logs });
+    const stub = c.env.DECISION_LOG.get(c.env.DECISION_LOG.idFromName(query.agent_id));
+    const response = await stub.fetch("https://do/query?" + new URLSearchParams(
+      Object.entries(query).filter(([, value]) => value !== undefined).map(([key, value]): [string, string] => [key, String(value)])
+    ));
+    if (!response.ok) return c.json({ error: "Log shard query failed." }, 502);
+    return c.json({ logs: await response.json() });
+  } catch (error) {
+    return c.json({ error: error instanceof ValidationError ? error.message : "Unable to query logs." }, 400);
+  }
 });
 
-// Count entries
+// Count entries in one explicitly selected agent shard.
 app.get("/count", async (c) => {
-  const agent_id = c.req.query("agent_id");
-  const doName = agent_id || "global";
-  const doId = c.env.DECISION_LOG.idFromName(doName);
-  const stub = c.env.DECISION_LOG.get(doId);
-  const res = await stub.fetch("https://do/count" + (agent_id ? `?agent_id=${agent_id}` : ""));
-  const count = await res.json();
-  return c.json({ count });
+  try {
+    const query = parseQuery({ agent_id: c.req.query("agent_id") });
+    if (!query.agent_id) return c.json({ error: "agent_id is required for shard-isolated counts." }, 400);
+    const stub = c.env.DECISION_LOG.get(c.env.DECISION_LOG.idFromName(query.agent_id));
+    const response = await stub.fetch("https://do/count?agent_id=" + encodeURIComponent(query.agent_id));
+    if (!response.ok) return c.json({ error: "Log shard count failed." }, 502);
+    return c.json({ count: await response.json() });
+  } catch (error) {
+    return c.json({ error: error instanceof ValidationError ? error.message : "Unable to count logs." }, 400);
+  }
 });
 
-// Rules & Alerts
+// Rules and alerts are evaluated only against the requested agent shard.
 app.get("/alerts", async (c) => {
-  const agent_id = c.req.query("agent_id");
-  const doName = agent_id || "global";
-  const doId = c.env.DECISION_LOG.idFromName(doName);
-  const stub = c.env.DECISION_LOG.get(doId);
-  const res = await stub.fetch("https://do/query?limit=500");
-  const logs = (await res.json()) as LogEntry[];
-  const alerts = evaluateRules(logs, defaultRules());
-  return c.json({ alerts });
+  try {
+    const query = parseQuery({ agent_id: c.req.query("agent_id"), limit: "100" });
+    if (!query.agent_id) return c.json({ error: "agent_id is required for shard-isolated alerts." }, 400);
+    const stub = c.env.DECISION_LOG.get(c.env.DECISION_LOG.idFromName(query.agent_id));
+    const response = await stub.fetch("https://do/query?agent_id=" + encodeURIComponent(query.agent_id) + "&limit=100");
+    if (!response.ok) return c.json({ error: "Log shard alert query failed." }, 502);
+    const logs = (await response.json()) as LogEntry[];
+    return c.json({ alerts: evaluateRules(logs, defaultRules()) });
+  } catch (error) {
+    return c.json({ error: error instanceof ValidationError ? error.message : "Unable to evaluate alerts." }, 400);
+  }
 });
 
 // MCP Endpoint route
@@ -432,20 +457,30 @@ app.all("/mcp", (c) => {
   return c.json({ message: "MCP Server endpoint active via DecisionLogMCP class" }, 200);
 });
 
-// Worker handler with Scheduled Retention Event
+// Worker handler with scheduled retention across registered agent shards.
 export default {
   fetch: app.fetch,
-  async scheduled(event: any, env: Env, ctx: any): Promise<void> {
+  async scheduled(_: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     const retentionDays = 30;
     const cutoffDate = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
-    console.log(`[Retention Cron] Pruning logs older than ${cutoffDate}`);
+    const registry = env.DECISION_LOG.get(env.DECISION_LOG.idFromName("__agent_registry__"));
+    const registryResponse = await registry.fetch("https://do/list-agents");
+    if (!registryResponse.ok) throw new Error("Unable to load registered decision-log shards for retention.");
 
-    const globalDoId = env.DECISION_LOG.idFromName("global");
-    const stub = env.DECISION_LOG.get(globalDoId);
-    await stub.fetch("https://do/delete-before", {
-      method: "POST",
-      body: JSON.stringify({ timestamp: cutoffDate }),
-      headers: { "Content-Type": "application/json" },
-    });
+    const agentIds = (await registryResponse.json()) as string[];
+    const retention = Promise.allSettled(agentIds.map(async (agentId) => {
+      const shard = env.DECISION_LOG.get(env.DECISION_LOG.idFromName(agentId));
+      const response = await shard.fetch("https://do/delete-before", {
+        method: "POST",
+        body: JSON.stringify({ timestamp: cutoffDate }),
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!response.ok) throw new Error(`Retention failed for agent shard ${agentId}.`);
+    }));
+
+    ctx.waitUntil(retention.then((results) => {
+      const failed = results.filter((result) => result.status === "rejected").length;
+      console.log(`[Retention Cron] Processed ${agentIds.length} shard(s); failures=${failed}; cutoff=${cutoffDate}`);
+    }));
   },
 };

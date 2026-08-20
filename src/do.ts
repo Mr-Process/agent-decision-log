@@ -57,6 +57,12 @@ export class DecisionLogDO extends TargetDurableObject {
     await sql.exec(
       `CREATE INDEX IF NOT EXISTS idx_tool ON log_entries(tool_name)`
     );
+    await sql.exec(
+      `CREATE TABLE IF NOT EXISTS agent_registry (
+        agent_id TEXT PRIMARY KEY,
+        updated_at TEXT NOT NULL
+      )`
+    );
   }
 
   async insert(entry: LogEntry): Promise<void> {
@@ -119,8 +125,8 @@ export class DecisionLogDO extends TargetDurableObject {
     if (q.until) { queryStr += " AND timestamp <= ?"; params.push(q.until); }
 
     queryStr += " ORDER BY timestamp DESC";
-    const limit = q.limit ?? 100;
-    const offset = q.offset ?? 0;
+    const limit = Math.max(1, Math.min(100, Number.isInteger(q.limit) ? q.limit! : 100));
+    const offset = Math.max(0, Math.min(100_000, Number.isInteger(q.offset) ? q.offset! : 0));
     queryStr += ` LIMIT ${limit} OFFSET ${offset}`;
 
     const result = await sql.exec(queryStr, ...params);
@@ -142,6 +148,26 @@ export class DecisionLogDO extends TargetDurableObject {
       });
     }
     return rows;
+  }
+
+  async registerAgent(agentId: string): Promise<void> {
+    await this.init();
+    const sql = this.getSql();
+    if (!sql) return;
+    await sql.exec(
+      `INSERT INTO agent_registry (agent_id, updated_at) VALUES (?, ?)
+       ON CONFLICT(agent_id) DO UPDATE SET updated_at = excluded.updated_at`,
+      agentId,
+      new Date().toISOString()
+    );
+  }
+
+  async listAgents(): Promise<string[]> {
+    await this.init();
+    const sql = this.getSql();
+    if (!sql) return [];
+    const rows = await sql.exec("SELECT agent_id FROM agent_registry ORDER BY agent_id ASC");
+    return Array.from(rows).map((row) => (row as Record<string, unknown>).agent_id).filter((id): id is string => typeof id === "string");
   }
 
   async count(agent_id?: string): Promise<number> {
@@ -170,6 +196,19 @@ export class DecisionLogDO extends TargetDurableObject {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+
+    if (url.pathname === "/register-agent" && request.method === "POST") {
+      const { agent_id } = (await request.json()) as { agent_id?: unknown };
+      if (typeof agent_id !== "string" || agent_id.length === 0 || agent_id.length > 128) {
+        return new Response("Invalid agent_id", { status: 400 });
+      }
+      await this.registerAgent(agent_id);
+      return new Response("ok", { status: 201 });
+    }
+
+    if (url.pathname === "/list-agents") {
+      return Response.json(await this.listAgents());
+    }
 
     if (url.pathname === "/insert" && request.method === "POST") {
       const entry = (await request.json()) as LogEntry;

@@ -11,7 +11,7 @@ Built on **Cloudflare Workers**, **Durable Objects (SQLite)**, **Hono**, and `@m
 When AI agents execute multi-step workflows, they autonomously invoke tools—searching the web, executing code, mutating databases, or making API calls. Without a dedicated audit trail, engineering teams face significant operational challenges:
 
 1. **Debugging Agent Loops & Hallucination**: Uncovering why an agent entered an infinite loop or invoked incorrect tool sequences.
-2. **Auditability & Compliance**: Maintaining a permanent, searchable log of every tool execution, input parameter, output result, reasoning chain, and execution status (`success`, `error`, `timeout`).
+2. **Auditability & Compliance**: Maintaining a searchable, retention-governed record of tool execution, bounded and redacted input/output fields, reasoning, and execution status (`success`, `error`, `timeout`).
 3. **Behavioral Anomaly Detection**: Identifying runaway agents that execute tool calls too rapidly or experience high failure rates.
 4. **Multi-Agent Isolation**: Tracking decisions across different agents (`agent_id`) and user sessions (`session_id`).
 
@@ -30,8 +30,8 @@ When AI agents execute multi-step workflows, they autonomously invoke tools—se
   - **`slow_calls`**: Average duration >10 seconds over 5 minutes (info).
 - **📊 Embedded Web Dashboard (`GET /`)**: Interactive dark-mode dashboard for searching, filtering, and inspecting decision logs live.
 - **📖 Interactive API Docs (`GET /docs`)**: Embedded Swagger UI and OpenAPI 3.0 spec (`/openapi.json`) for interactive API testing.
-- **🔒 API Key Auth & CORS Security**: Optional `API_KEY` middleware (`Authorization: Bearer <key>` or `x-api-key`) and CORS headers.
-- **🧹 Automated Data Retention**: Daily Cloudflare Cron Trigger (`0 0 * * *`) that automatically prunes decision logs older than 30 days.
+- **🔒 Fail-Closed API Key Auth & Restricted CORS**: Every data and MCP route requires `API_KEY` (`Authorization: Bearer <key>` or `x-api-key`); CORS is disabled until exact `ALLOWED_ORIGINS` values are configured.
+- **🧹 Complete Automated Data Retention**: A daily Cloudflare Cron Trigger (`0 0 * * *`) uses a registry of active agent shards and prunes logs older than 30 days across each known shard.
 - **📦 Thin TypeScript SDK**: Client library (`DecisionLogClient`) for 2-line integration in non-MCP TypeScript apps.
 
 ---
@@ -86,8 +86,8 @@ Each logged decision records the following fields:
 | `session_id` | `string` | Conversation or run session ID |
 | `timestamp` | `string` (ISO 8601) | Execution timestamp |
 | `tool_name` | `string` | Name of the tool invoked (e.g. `search_web`, `execute_code`) |
-| `input` | `object` \| `null` | JSON payload of input arguments passed to the tool |
-| `output` | `object` \| `null` | JSON payload of output returned by the tool |
+| `input` | `object` \| `null` | Bounded JSON payload of input arguments; recognized credential fields are redacted |
+| `output` | `object` \| `null` | Bounded JSON payload of tool output; recognized credential fields are redacted |
 | `reasoning` | `string` \| `null` | Agent's self-reported reasoning trace for invoking the tool |
 | `result_status` | `string` | Outcome status (`"success"` \| `"error"` \| `"timeout"`) |
 | `duration_ms` | `number` | Execution time in milliseconds |
@@ -109,9 +109,12 @@ npm install
 npm test
 ```
 
-### 3. Start Local Development Server
+### 3. Configure Access and Start Local Development Server
+
+Set a strong worker secret before using protected routes. Add `ALLOWED_ORIGINS` only when a browser dashboard must access the service from a specific origin.
 
 ```bash
+npx wrangler secret put API_KEY
 npm run dev
 ```
 
@@ -185,11 +188,13 @@ curl -X POST http://localhost:8787/log \
     "duration_ms": 1150
   }'
 
-# Query decision logs
-curl "http://localhost:8787/logs?agent_id=code-agent&limit=10"
+# Query decision logs in one isolated agent shard
+curl "http://localhost:8787/logs?agent_id=code-agent&limit=10" \
+  -H "Authorization: Bearer YOUR_API_KEY"
 
-# Fetch active alerts
-curl "http://localhost:8787/alerts?agent_id=code-agent"
+# Fetch active alerts for one isolated agent shard
+curl "http://localhost:8787/alerts?agent_id=code-agent" \
+  -H "Authorization: Bearer YOUR_API_KEY"
 ```
 
 ---

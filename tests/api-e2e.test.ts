@@ -31,10 +31,19 @@ class MockStorage {
 }
 
 class MockDOStub {
+  private agents = new Set<string>();
   constructor(private storage: MockStorage) {}
 
   async fetch(urlStr: string | Request, init?: RequestInit) {
     const url = new URL(typeof urlStr === "string" ? urlStr : urlStr.url);
+    if (url.pathname === "/register-agent") {
+      const body = JSON.parse(init?.body as string);
+      this.agents.add(body.agent_id);
+      return new Response("ok", { status: 201 });
+    }
+    if (url.pathname === "/list-agents") {
+      return Response.json(Array.from(this.agents));
+    }
     if (url.pathname === "/insert") {
       const body = JSON.parse(init?.body as string);
       await this.storage.insert(body);
