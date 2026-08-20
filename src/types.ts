@@ -2,6 +2,7 @@ export interface LogEntry {
   id: string;
   agent_id: string;
   session_id: string;
+  trace_id: string | null;
   timestamp: string;
   tool_name: string;
   input: unknown;
@@ -15,6 +16,7 @@ export interface LogEntry {
 export interface LogQuery {
   agent_id?: string;
   session_id?: string;
+  trace_id?: string;
   tool_name?: string;
   result_status?: string;
   since?: string;

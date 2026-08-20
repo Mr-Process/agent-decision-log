@@ -7,6 +7,7 @@ export const MAX_REASONING_CHARS = 8_192;
 export const MAX_METADATA_BYTES = 16 * 1024;
 
 const identifier = z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9._:@/-]+$/, "Invalid identifier format.");
+const traceIdentifier = z.string().trim().regex(/^trc_[A-Za-z0-9_-]{12,128}$/, "Invalid trace ID.");
 const status = z.enum(["success", "error", "timeout"]);
 const duration = z.number().finite().min(0).max(86_400_000);
 const optionalReasoning = z.string().max(MAX_REASONING_CHARS).nullable().optional();
@@ -15,6 +16,7 @@ const arbitraryObject = z.record(z.string(), z.unknown()).default({});
 const incomingEntry = z.object({
   agent_id: identifier,
   session_id: identifier,
+  trace_id: traceIdentifier.nullable().optional(),
   tool_name: identifier,
   input: z.unknown().nullable().optional(),
   output: z.unknown().nullable().optional(),
@@ -74,6 +76,7 @@ export function parseEntry(payload: unknown, timestamp = new Date().toISOString(
     id: crypto.randomUUID(),
     agent_id: parsed.data.agent_id,
     session_id: parsed.data.session_id,
+    trace_id: parsed.data.trace_id ?? null,
     timestamp,
     tool_name: parsed.data.tool_name,
     input: redactAndBound(parsed.data.input ?? null, MAX_JSON_FIELD_BYTES, "input"),
@@ -120,6 +123,7 @@ export function parseQuery(params: Record<string, string | undefined>): LogQuery
   return {
     agent_id: optionalIdentifier(params.agent_id, "agent_id"),
     session_id: optionalIdentifier(params.session_id, "session_id"),
+    trace_id: params.trace_id ? (() => { const result = traceIdentifier.safeParse(params.trace_id); if (!result.success) throw new ValidationError("trace_id is invalid."); return result.data; })() : undefined,
     tool_name: optionalIdentifier(params.tool_name, "tool_name"),
     result_status: resultStatus,
     since: dateOrUndefined(params.since, "since"),

@@ -35,6 +35,7 @@ export class DecisionLogDO extends TargetDurableObject {
         id TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL,
         session_id TEXT NOT NULL,
+        trace_id TEXT,
         timestamp TEXT NOT NULL,
         tool_name TEXT NOT NULL,
         input TEXT,
@@ -54,8 +55,16 @@ export class DecisionLogDO extends TargetDurableObject {
     await sql.exec(
       `CREATE INDEX IF NOT EXISTS idx_timestamp ON log_entries(timestamp)`
     );
+    try {
+      await sql.exec("ALTER TABLE log_entries ADD COLUMN trace_id TEXT");
+    } catch {
+      // Existing and newly created tables already have the column.
+    }
     await sql.exec(
       `CREATE INDEX IF NOT EXISTS idx_tool ON log_entries(tool_name)`
+    );
+    await sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_trace ON log_entries(trace_id)`
     );
     await sql.exec(
       `CREATE TABLE IF NOT EXISTS agent_registry (
@@ -70,11 +79,12 @@ export class DecisionLogDO extends TargetDurableObject {
     const sql = this.getSql();
     if (!sql) return;
     await sql.exec(
-      `INSERT INTO log_entries (id, agent_id, session_id, timestamp, tool_name, input, output, reasoning, result_status, duration_ms, metadata)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO log_entries (id, agent_id, session_id, trace_id, timestamp, tool_name, input, output, reasoning, result_status, duration_ms, metadata)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       entry.id,
       entry.agent_id,
       entry.session_id,
+      entry.trace_id,
       entry.timestamp,
       entry.tool_name,
       JSON.stringify(entry.input),
@@ -119,6 +129,7 @@ export class DecisionLogDO extends TargetDurableObject {
 
     if (q.agent_id) { queryStr += " AND agent_id = ?"; params.push(q.agent_id); }
     if (q.session_id) { queryStr += " AND session_id = ?"; params.push(q.session_id); }
+    if (q.trace_id) { queryStr += " AND trace_id = ?"; params.push(q.trace_id); }
     if (q.tool_name) { queryStr += " AND tool_name = ?"; params.push(q.tool_name); }
     if (q.result_status) { queryStr += " AND result_status = ?"; params.push(q.result_status); }
     if (q.since) { queryStr += " AND timestamp >= ?"; params.push(q.since); }
@@ -137,6 +148,7 @@ export class DecisionLogDO extends TargetDurableObject {
         id: r.id as string,
         agent_id: r.agent_id as string,
         session_id: r.session_id as string,
+        trace_id: (r.trace_id as string | null) ?? null,
         timestamp: r.timestamp as string,
         tool_name: r.tool_name as string,
         input: r.input ? JSON.parse(r.input as string) : null,
@@ -233,6 +245,7 @@ export class DecisionLogDO extends TargetDurableObject {
       const q: LogQuery = {
         agent_id: params.get("agent_id") || undefined,
         session_id: params.get("session_id") || undefined,
+        trace_id: params.get("trace_id") || undefined,
         tool_name: params.get("tool_name") || undefined,
         result_status: params.get("result_status") || undefined,
         since: params.get("since") || undefined,

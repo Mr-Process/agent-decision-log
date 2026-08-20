@@ -13,6 +13,7 @@ class MockStorage {
     let res = [...this.logs];
     if (q.agent_id) res = res.filter((l) => l.agent_id === q.agent_id);
     if (q.session_id) res = res.filter((l) => l.session_id === q.session_id);
+    if (q.trace_id) res = res.filter((l) => l.trace_id === q.trace_id);
     if (q.tool_name) res = res.filter((l) => l.tool_name === q.tool_name);
     if (q.result_status) res = res.filter((l) => l.result_status === q.result_status);
     return res;
@@ -65,6 +66,7 @@ class MockDOStub {
       const q = {
         agent_id: url.searchParams.get("agent_id") || undefined,
         session_id: url.searchParams.get("session_id") || undefined,
+        trace_id: url.searchParams.get("trace_id") || undefined,
         tool_name: url.searchParams.get("tool_name") || undefined,
         result_status: url.searchParams.get("result_status") || undefined,
       };
@@ -138,6 +140,7 @@ export async function runApiE2ETests() {
       body: JSON.stringify({
         agent_id: "agent-1",
         session_id: "sess-100",
+        trace_id: "trc_01ARZ3NDEKTSV4RRFFQ69G5FAV",
         tool_name: "search_web",
         input: { query: "e2e testing" },
         output: { results: ["test1"] },
@@ -197,7 +200,17 @@ export async function runApiE2ETests() {
   const queryData = (await queryRes.json()) as any;
   assertEqual(queryData.logs.length, 1, "Query returns 1 log entry");
 
-  // 7. Count Logs
+  // 7. Trace timeline and exception queue
+  const traceRes = await app.request(
+    "/traces/trc_01ARZ3NDEKTSV4RRFFQ69G5FAV?agent_id=agent-1",
+    { headers: { "Authorization": "Bearer secret-test-key" } },
+    env
+  );
+  assertEqual(traceRes.status, 200, "Trace timeline returns status 200");
+  const traceData = (await traceRes.json()) as any;
+  assertEqual(traceData.events.length, 1, "Trace timeline returns linked event");
+
+  // 8. Count Logs
   const countRes = await app.request(
     "/count?agent_id=batch-agent",
     { headers: { "Authorization": "Bearer secret-test-key" } },
@@ -207,7 +220,7 @@ export async function runApiE2ETests() {
   const countData = (await countRes.json()) as any;
   assertEqual(countData.count, 2, "Batch log count matches expected 2");
 
-  // 8. Rapid Calls Alert Generation
+  // 9. Rapid Calls Alert Generation
   for (let i = 0; i < 22; i++) {
     await app.request(
       "/log",

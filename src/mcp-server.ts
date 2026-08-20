@@ -23,9 +23,11 @@ try {
 }
 
 const identifier = z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9._:@/-]+$/);
+const traceIdentifier = z.string().trim().regex(/^trc_[A-Za-z0-9_-]{12,128}$/);
 const LogDecisionSchema = {
   agent_id: identifier.describe("Unique identifier for the agent"),
   session_id: identifier.describe("Session identifier"),
+  trace_id: traceIdentifier.optional().describe("Optional cross-service trace identifier"),
   tool_name: identifier.describe("Name of the tool that was called"),
   input: z.string().max(32 * 1024).optional().describe("JSON string of the tool input"),
   output: z.string().max(32 * 1024).optional().describe("JSON string of the tool output"),
@@ -37,6 +39,7 @@ const LogDecisionSchema = {
 const QueryLogsSchema = {
   agent_id: identifier.describe("Agent shard to query"),
   session_id: identifier.optional().describe("Filter by session"),
+  trace_id: traceIdentifier.optional().describe("Filter by cross-service trace"),
   tool_name: identifier.optional().describe("Filter by tool name"),
   result_status: z.enum(["success", "error", "timeout"]).optional().describe("Filter by status"),
   limit: z.number().int().min(1).max(100).optional().describe("Max results (default 100)"),

@@ -403,6 +403,7 @@ app.get("/logs", async (c) => {
     const query = parseQuery({
       agent_id: c.req.query("agent_id"),
       session_id: c.req.query("session_id"),
+      trace_id: c.req.query("trace_id"),
       tool_name: c.req.query("tool_name"),
       result_status: c.req.query("result_status"),
       since: c.req.query("since"),
@@ -420,6 +421,50 @@ app.get("/logs", async (c) => {
     return c.json({ logs: await response.json() });
   } catch (error) {
     return c.json({ error: error instanceof ValidationError ? error.message : "Unable to query logs." }, 400);
+  }
+});
+
+function isExceptionEvent(entry: LogEntry): boolean {
+  if (entry.result_status !== "success") return true;
+  const lifecycle = entry.metadata.operation_status;
+  return lifecycle === "failed" || lifecycle === "ambiguous" || lifecycle === "policy_denied";
+}
+
+// Trace timelines remain isolated to one explicitly selected agent shard.
+app.get("/traces/:traceId", async (c) => {
+  try {
+    const query = parseQuery({
+      agent_id: c.req.query("agent_id"),
+      trace_id: c.req.param("traceId"),
+      limit: c.req.query("limit") ?? "100",
+    });
+    if (!query.agent_id || !query.trace_id) return c.json({ error: "agent_id and trace ID are required." }, 400);
+    const shard = c.env.DECISION_LOG.get(c.env.DECISION_LOG.idFromName(query.agent_id));
+    const response = await shard.fetch("https://do/query?" + new URLSearchParams([
+      ["agent_id", query.agent_id],
+      ["trace_id", query.trace_id],
+      ["limit", String(query.limit)],
+    ]));
+    if (!response.ok) return c.json({ error: "Trace timeline query failed." }, 502);
+    const events = (await response.json() as LogEntry[]).sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+    return c.json({ trace_id: query.trace_id, agent_id: query.agent_id, events, exception_count: events.filter(isExceptionEvent).length });
+  } catch (error) {
+    return c.json({ error: error instanceof ValidationError ? error.message : "Unable to load trace timeline." }, 400);
+  }
+});
+
+// The exception queue surfaces errors, timeouts, policy denials, and ambiguous lifecycle events.
+app.get("/exceptions", async (c) => {
+  try {
+    const query = parseQuery({ agent_id: c.req.query("agent_id"), limit: c.req.query("limit") ?? "100" });
+    if (!query.agent_id) return c.json({ error: "agent_id is required for an exception queue." }, 400);
+    const shard = c.env.DECISION_LOG.get(c.env.DECISION_LOG.idFromName(query.agent_id));
+    const response = await shard.fetch("https://do/query?agent_id=" + encodeURIComponent(query.agent_id) + "&limit=100");
+    if (!response.ok) return c.json({ error: "Exception queue query failed." }, 502);
+    const exceptions = (await response.json() as LogEntry[]).filter(isExceptionEvent).slice(0, query.limit);
+    return c.json({ agent_id: query.agent_id, exceptions, count: exceptions.length });
+  } catch (error) {
+    return c.json({ error: error instanceof ValidationError ? error.message : "Unable to load exception queue." }, 400);
   }
 });
 
