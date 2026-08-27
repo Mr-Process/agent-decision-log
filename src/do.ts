@@ -22,41 +22,52 @@ try {
 }
 
 export class DecisionLogDO extends TargetDurableObject {
+  private initialized = false;
+  private initPromise?: Promise<void>;
+
   private getSql() {
     const storage = (this as any).ctx?.storage as any;
     return storage?.sql || storage;
   }
 
   async init(): Promise<void> {
-    const sql = this.getSql();
-    if (!sql) return;
-    await sql.exec(
-      `CREATE TABLE IF NOT EXISTS log_entries (
-        id TEXT PRIMARY KEY,
-        agent_id TEXT NOT NULL,
-        session_id TEXT NOT NULL,
-        timestamp TEXT NOT NULL,
-        tool_name TEXT NOT NULL,
-        input TEXT,
-        output TEXT,
-        reasoning TEXT,
-        result_status TEXT NOT NULL,
-        duration_ms INTEGER NOT NULL,
-        metadata TEXT
-      )`
-    );
-    await sql.exec(
-      `CREATE INDEX IF NOT EXISTS idx_agent ON log_entries(agent_id)`
-    );
-    await sql.exec(
-      `CREATE INDEX IF NOT EXISTS idx_session ON log_entries(session_id)`
-    );
-    await sql.exec(
-      `CREATE INDEX IF NOT EXISTS idx_timestamp ON log_entries(timestamp)`
-    );
-    await sql.exec(
-      `CREATE INDEX IF NOT EXISTS idx_tool ON log_entries(tool_name)`
-    );
+    if (this.initialized) return;
+    if (this.initPromise) return this.initPromise;
+
+    this.initPromise = (async () => {
+      const sql = this.getSql();
+      if (!sql) return;
+      await sql.exec(
+        `CREATE TABLE IF NOT EXISTS log_entries (
+          id TEXT PRIMARY KEY,
+          agent_id TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          timestamp TEXT NOT NULL,
+          tool_name TEXT NOT NULL,
+          input TEXT,
+          output TEXT,
+          reasoning TEXT,
+          result_status TEXT NOT NULL,
+          duration_ms INTEGER NOT NULL,
+          metadata TEXT
+        )`
+      );
+      await sql.exec(
+        `CREATE INDEX IF NOT EXISTS idx_agent ON log_entries(agent_id)`
+      );
+      await sql.exec(
+        `CREATE INDEX IF NOT EXISTS idx_session ON log_entries(session_id)`
+      );
+      await sql.exec(
+        `CREATE INDEX IF NOT EXISTS idx_timestamp ON log_entries(timestamp)`
+      );
+      await sql.exec(
+        `CREATE INDEX IF NOT EXISTS idx_tool ON log_entries(tool_name)`
+      );
+      this.initialized = true;
+    })();
+
+    return this.initPromise;
   }
 
   async insert(entry: LogEntry): Promise<void> {
@@ -85,10 +96,17 @@ export class DecisionLogDO extends TargetDurableObject {
     await this.init();
     const sql = this.getSql();
     if (!sql) return;
-    for (const entry of entries) {
-      await sql.exec(
-        `INSERT INTO log_entries (id, agent_id, session_id, timestamp, tool_name, input, output, reasoning, result_status, duration_ms, metadata)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+
+    // Each row uses 11 parameters. SQLite/D1 commonly limits to 999 parameters by default.
+    const paramsPerRow = 11;
+    const driverMaxParams = 999; // conservative default; adjust if needed for specific driver
+    const maxChunkByParams = Math.max(1, Math.floor(driverMaxParams / paramsPerRow));
+    const chunkSize = Math.min(500, maxChunkByParams);
+
+    for (let i = 0; i < entries.length; i += chunkSize) {
+      const chunk = entries.slice(i, i + chunkSize);
+      const placeholders = chunk.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
+      const params = chunk.flatMap((entry) => [
         entry.id,
         entry.agent_id,
         entry.session_id,
@@ -99,7 +117,13 @@ export class DecisionLogDO extends TargetDurableObject {
         entry.reasoning,
         entry.result_status,
         entry.duration_ms,
-        JSON.stringify(entry.metadata)
+        JSON.stringify(entry.metadata),
+      ]);
+
+      await sql.exec(
+        `INSERT INTO log_entries (id, agent_id, session_id, timestamp, tool_name, input, output, reasoning, result_status, duration_ms, metadata)
+         VALUES ${placeholders}`,
+        ...params
       );
     }
   }
