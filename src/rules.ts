@@ -33,22 +33,33 @@ export function evaluateRules(entries: LogEntry[], rules: Rule[]): Alert[] {
   const alerts: Alert[] = [];
   const now = Date.now();
 
+  // Pre-parse entry timestamps once to avoid repeated Date parsing in loops
+  const parsedEntries = entries.map((e) => ({
+    entry: e,
+    time: new Date(e.timestamp).getTime(),
+  }));
+
   for (const rule of rules) {
     const windowStart = now - rule.pattern.window_ms;
-    const windowEntries = entries.filter(
-      (e) => new Date(e.timestamp).getTime() >= windowStart
-    );
+    const windowEntries = parsedEntries
+      .filter((pe) => pe.time >= windowStart)
+      .map((pe) => pe.entry);
 
     if (windowEntries.length === 0) continue;
+
+    // Use the agent_id from the first entry inside the window (more accurate than using the first overall entry)
+    const agentId = windowEntries[0].agent_id || entries[0]?.agent_id || "";
 
     switch (rule.pattern.metric) {
       case "call_count": {
         const count = windowEntries.length;
         if (compare(count, rule.pattern.operator, rule.pattern.threshold)) {
-          alerts.push(makeAlert(rule, entries[0].agent_id, {
-            count,
-            window_s: rule.pattern.window_ms / 1000,
-          }));
+          alerts.push(
+            makeAlert(rule, agentId, {
+              count,
+              window_s: rule.pattern.window_ms / 1000,
+            })
+          );
         }
         break;
       }
@@ -56,19 +67,23 @@ export function evaluateRules(entries: LogEntry[], rules: Rule[]): Alert[] {
         const errors = windowEntries.filter((e) => e.result_status === "error").length;
         const rate = (errors / windowEntries.length) * 100;
         if (compare(rate, rule.pattern.operator, rule.pattern.threshold)) {
-          alerts.push(makeAlert(rule, entries[0].agent_id, {
-            rate: rate.toFixed(1),
-            window_s: rule.pattern.window_ms / 1000,
-          }));
+          alerts.push(
+            makeAlert(rule, agentId, {
+              rate: rate.toFixed(1),
+              window_s: rule.pattern.window_ms / 1000,
+            })
+          );
         }
         break;
       }
       case "duration": {
         const avg = windowEntries.reduce((sum, e) => sum + e.duration_ms, 0) / windowEntries.length;
         if (compare(avg, rule.pattern.operator, rule.pattern.threshold)) {
-          alerts.push(makeAlert(rule, entries[0].agent_id, {
-            avg_ms: Math.round(avg),
-          }));
+          alerts.push(
+            makeAlert(rule, agentId, {
+              avg_ms: Math.round(avg),
+            })
+          );
         }
         break;
       }
@@ -84,12 +99,18 @@ export function evaluateRules(entries: LogEntry[], rules: Rule[]): Alert[] {
 
 function compare(a: number, op: string, b: number): boolean {
   switch (op) {
-    case ">": return a > b;
-    case "<": return a < b;
-    case ">=": return a >= b;
-    case "<=": return a <= b;
-    case "==": return a === b;
-    default: return false;
+    case ">":
+      return a > b;
+    case "<":
+      return a < b;
+    case ">=":
+      return a >= b;
+    case "<=":
+      return a <= b;
+    case "==":
+      return a === b;
+    default:
+      return false;
   }
 }
 
