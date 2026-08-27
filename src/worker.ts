@@ -111,6 +111,16 @@ app.get("/", (c) => {
     </tbody>
   </table>
   <script>
+    function escapeHTML(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
     async function loadLogs() {
       const params = new URLSearchParams();
       const agent = document.getElementById('agent_id').value;
@@ -131,17 +141,25 @@ app.get("/", (c) => {
         return;
       }
       tbody.innerHTML = data.logs.map(l => {
-        const time = new Date(l.timestamp).toLocaleString();
-        const inputStr = l.input ? JSON.stringify(l.input).substring(0, 80) : '';
+        const time = escapeHTML(new Date(l.timestamp).toLocaleString());
+        const inputStr = l.input ? escapeHTML(JSON.stringify(l.input).substring(0, 80)) : '';
+        const agentId = escapeHTML(l.agent_id);
+        const sessionId = escapeHTML(l.session_id ? l.session_id.substring(0, 12) : '');
+        const toolName = escapeHTML(l.tool_name);
+        const status = escapeHTML(l.result_status);
+        const inputFull = l.input ? escapeHTML(JSON.stringify(l.input)) : '';
+        const reasoningFull = escapeHTML(l.reasoning || '');
+        const duration = escapeHTML(l.duration_ms);
+
         return '<tr>' +
           '<td>' + time + '</td>' +
-          '<td>' + l.agent_id + '</td>' +
-          '<td>' + (l.session_id ? l.session_id.substring(0, 12) : '') + '</td>' +
-          '<td>' + l.tool_name + '</td>' +
-          '<td class="status-' + l.result_status + '">' + l.result_status + '</td>' +
-          '<td class="json-cell" title="' + (l.input ? JSON.stringify(l.input).replace(/"/g, '&quot;') : '') + '">' + inputStr + '</td>' +
-          '<td class="reasoning" title="' + (l.reasoning || '').replace(/"/g, '&quot;') + '">' + (l.reasoning || '') + '</td>' +
-          '<td>' + l.duration_ms + 'ms</td>' +
+          '<td>' + agentId + '</td>' +
+          '<td>' + sessionId + '</td>' +
+          '<td>' + toolName + '</td>' +
+          '<td class="status-' + status + '">' + status + '</td>' +
+          '<td class="json-cell" title="' + inputFull + '">' + inputStr + '</td>' +
+          '<td class="reasoning" title="' + reasoningFull + '">' + reasoningFull + '</td>' +
+          '<td>' + duration + 'ms</td>' +
         '</tr>';
       }).join('');
     }
@@ -398,7 +416,7 @@ app.get("/logs", async (c) => {
   const doId = c.env.DECISION_LOG.idFromName(doName);
   const stub = c.env.DECISION_LOG.get(doId);
   const res = await stub.fetch("https://do/query?" + new URLSearchParams(
-    Object.entries(query).filter(([_, v]) => v !== undefined).map(([k, v]) => [k, String(v)])
+    Object.entries(query).filter(([_, v]) => v !== undefined).map(([k, v]) => [k, String(v)] as [string, string])
   ));
   const logs = await res.json();
   return c.json({ logs });

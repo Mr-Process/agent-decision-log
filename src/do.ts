@@ -121,7 +121,8 @@ export class DecisionLogDO extends TargetDurableObject {
     queryStr += " ORDER BY timestamp DESC";
     const limit = q.limit ?? 100;
     const offset = q.offset ?? 0;
-    queryStr += ` LIMIT ${limit} OFFSET ${offset}`;
+    queryStr += " LIMIT ? OFFSET ?";
+    params.push(limit, offset);
 
     const result = await sql.exec(queryStr, ...params);
     const rows: LogEntry[] = [];

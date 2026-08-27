@@ -21,15 +21,17 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.5.0",
-    "agents": "^0.3.0",
+    "agents": "^0.20.1",
     "hono": "^4.7.2",
-    "zod": "^3.24.1"
+    "miniflare": "^5.20260801.0-alpha",
+    "undici": "^8.10.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250204.0",
+    "@cloudflare/workers-types": "^5.20260804.1",
     "@types/node": "^22.13.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
-    "wrangler": "^3.107.2"
+    "wrangler": "^4.119.0"
   }
 }
