@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { z } from "zod";
 import { DecisionLogDO } from "./do.js";
 import { DecisionLogMCP } from "./mcp-server.js";
 import type { LogEntry, LogQuery } from "./types.js";
@@ -7,9 +8,33 @@ import { defaultRules, evaluateRules } from "./rules.js";
 
 export { DecisionLogDO, DecisionLogMCP };
 
+const LogEntrySchema = z.object({
+  agent_id: z.string(),
+  session_id: z.string(),
+  tool_name: z.string(),
+  result_status: z.enum(["success", "error", "timeout"]),
+  input: z.unknown().optional(),
+  output: z.unknown().optional(),
+  reasoning: z.string().optional(),
+  duration_ms: z.number().optional(),
+  metadata: z.record(z.unknown()).optional(),
+  timestamp: z.string().optional(),
+});
+
+const BatchLogSchema = z.object({
+  entries: z.array(LogEntrySchema).min(1, "Invalid payload: 'entries' array required"),
+});
+
 export interface Env {
   DECISION_LOG: DurableObjectNamespace;
   API_KEY?: string;
+}
+
+// Helper function to resolve Durable Object Stub
+function getDOStub(env: Env, agentId?: string) {
+  const doName = agentId || "global";
+  const doId = env.DECISION_LOG.idFromName(doName);
+  return env.DECISION_LOG.get(doId);
 }
 
 export const app = new Hono<{ Bindings: Env }>();
@@ -18,19 +43,7 @@ export const app = new Hono<{ Bindings: Env }>();
 app.use("*", cors());
 
 // 2. Authentication Middleware for API Endpoints
-app.use("*", async (c, next) => {
-  const path = c.req.path;
-  // Public routes: Dashboard, Health, MCP, Docs, OpenAPI
-  if (
-    path === "/" ||
-    path === "/health" ||
-    path.startsWith("/mcp") ||
-    path === "/docs" ||
-    path === "/openapi.json"
-  ) {
-    return next();
-  }
-
+const authMiddleware = async (c: any, next: any) => {
   // If API_KEY environment variable is configured, enforce auth check
   const requiredKey = c.env.API_KEY;
   if (requiredKey) {
@@ -48,7 +61,7 @@ app.use("*", async (c, next) => {
   }
 
   return next();
-});
+};
 
 // Dashboard UI
 app.get("/", (c) => {
@@ -300,13 +313,15 @@ app.get("/openapi.json", (c) => {
 app.get("/health", (c) => c.text("ok"));
 
 // Log a single decision
-app.post("/log", async (c) => {
+app.post("/log", authMiddleware, async (c) => {
   const body = await c.req.json();
-  const { agent_id, session_id, tool_name, input, output, reasoning, result_status, duration_ms, metadata } = body;
+  const parseResult = LogEntrySchema.safeParse(body);
 
-  if (!agent_id || !session_id || !tool_name || !result_status) {
+  if (!parseResult.success) {
     return c.json({ error: "Missing required fields: agent_id, session_id, tool_name, result_status" }, 400);
   }
+
+  const { agent_id, session_id, tool_name, input, output, reasoning, result_status, duration_ms, metadata } = parseResult.data;
 
   const entry: LogEntry = {
     id: crypto.randomUUID(),
@@ -322,8 +337,7 @@ app.post("/log", async (c) => {
     metadata: metadata ?? {},
   };
 
-  const doId = c.env.DECISION_LOG.idFromName(agent_id);
-  const stub = c.env.DECISION_LOG.get(doId);
+  const stub = getDOStub(c.env, agent_id);
   await stub.fetch("https://do/insert", {
     method: "POST",
     body: JSON.stringify(entry),
@@ -334,19 +348,18 @@ app.post("/log", async (c) => {
 });
 
 // Log batch decisions
-app.post("/log/batch", async (c) => {
+app.post("/log/batch", authMiddleware, async (c) => {
   const body = await c.req.json();
-  const { entries } = body as { entries: any[] };
+  const parseResult = BatchLogSchema.safeParse(body);
 
-  if (!Array.isArray(entries) || entries.length === 0) {
+  if (!parseResult.success) {
     return c.json({ error: "Invalid payload: 'entries' array required" }, 400);
   }
 
+  const { entries } = parseResult.data;
+
   const grouped = new Map<string, LogEntry[]>();
   for (const item of entries) {
-    if (!item.agent_id || !item.session_id || !item.tool_name || !item.result_status) {
-      continue;
-    }
     const entry: LogEntry = {
       id: crypto.randomUUID(),
       agent_id: item.agent_id,
@@ -368,8 +381,7 @@ app.post("/log/batch", async (c) => {
 
   let totalInserted = 0;
   for (const [agent_id, agentEntries] of grouped.entries()) {
-    const doId = c.env.DECISION_LOG.idFromName(agent_id);
-    const stub = c.env.DECISION_LOG.get(doId);
+    const stub = getDOStub(c.env, agent_id);
     await stub.fetch("https://do/insert-batch", {
       method: "POST",
       body: JSON.stringify(agentEntries),
@@ -382,7 +394,7 @@ app.post("/log/batch", async (c) => {
 });
 
 // Query decisions
-app.get("/logs", async (c) => {
+app.get("/logs", authMiddleware, async (c) => {
   const query: LogQuery = {
     agent_id: c.req.query("agent_id"),
     session_id: c.req.query("session_id"),
@@ -394,9 +406,7 @@ app.get("/logs", async (c) => {
     offset: c.req.query("offset") ? parseInt(c.req.query("offset")!, 10) : undefined,
   };
 
-  const doName = query.agent_id || "global";
-  const doId = c.env.DECISION_LOG.idFromName(doName);
-  const stub = c.env.DECISION_LOG.get(doId);
+  const stub = getDOStub(c.env, query.agent_id);
   const res = await stub.fetch("https://do/query?" + new URLSearchParams(
     Object.entries(query).filter(([_, v]) => v !== undefined).map(([k, v]) => [k, String(v)])
   ));
@@ -405,22 +415,18 @@ app.get("/logs", async (c) => {
 });
 
 // Count entries
-app.get("/count", async (c) => {
+app.get("/count", authMiddleware, async (c) => {
   const agent_id = c.req.query("agent_id");
-  const doName = agent_id || "global";
-  const doId = c.env.DECISION_LOG.idFromName(doName);
-  const stub = c.env.DECISION_LOG.get(doId);
+  const stub = getDOStub(c.env, agent_id);
   const res = await stub.fetch("https://do/count" + (agent_id ? `?agent_id=${agent_id}` : ""));
   const count = await res.json();
   return c.json({ count });
 });
 
 // Rules & Alerts
-app.get("/alerts", async (c) => {
+app.get("/alerts", authMiddleware, async (c) => {
   const agent_id = c.req.query("agent_id");
-  const doName = agent_id || "global";
-  const doId = c.env.DECISION_LOG.idFromName(doName);
-  const stub = c.env.DECISION_LOG.get(doId);
+  const stub = getDOStub(c.env, agent_id);
   const res = await stub.fetch("https://do/query?limit=500");
   const logs = (await res.json()) as LogEntry[];
   const alerts = evaluateRules(logs, defaultRules());
@@ -440,8 +446,7 @@ export default {
     const cutoffDate = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
     console.log(`[Retention Cron] Pruning logs older than ${cutoffDate}`);
 
-    const globalDoId = env.DECISION_LOG.idFromName("global");
-    const stub = env.DECISION_LOG.get(globalDoId);
+    const stub = getDOStub(env, "global");
     await stub.fetch("https://do/delete-before", {
       method: "POST",
       body: JSON.stringify({ timestamp: cutoffDate }),

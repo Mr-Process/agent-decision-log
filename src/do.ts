@@ -22,12 +22,15 @@ try {
 }
 
 export class DecisionLogDO extends TargetDurableObject {
+  private initialized = false;
+
   private getSql() {
     const storage = (this as any).ctx?.storage as any;
     return storage?.sql || storage;
   }
 
   async init(): Promise<void> {
+    if (this.initialized) return;
     const sql = this.getSql();
     if (!sql) return;
     await sql.exec(
@@ -57,6 +60,7 @@ export class DecisionLogDO extends TargetDurableObject {
     await sql.exec(
       `CREATE INDEX IF NOT EXISTS idx_tool ON log_entries(tool_name)`
     );
+    this.initialized = true;
   }
 
   async insert(entry: LogEntry): Promise<void> {
